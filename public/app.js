@@ -1,6 +1,6 @@
 const GITHUB_OWNER = "ajapple1181";
 const GITHUB_REPO = "sokuho";
-const ISSUE_NUMBER = 4458194104;
+const ISSUE_NUMBER = 1;
 
 const AWAY_TEAM = "恵那";
 const HOME_TEAM = "多治見北";
