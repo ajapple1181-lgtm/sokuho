@@ -1,10 +1,29 @@
-const GITHUB_OWNER = "ajapple1181";
-const GITHUB_REPO = "sokuho";
 const ISSUE_NUMBER = 1;
 
 const AWAY_TEAM = "恵那";
 const HOME_TEAM = "多治見北";
 const REFRESH_MS = 30000;
+
+function detectGitHubRepo() {
+  const host = location.hostname;
+  const path = location.pathname.split("/").filter(Boolean);
+
+  if (host.endsWith(".github.io")) {
+    return {
+      owner: host.replace(".github.io", ""),
+      repo: path[0] || ""
+    };
+  }
+
+  return {
+    owner: "ajapple1181-lgtm",
+    repo: "yasusokuho"
+  };
+}
+
+const detected = detectGitHubRepo();
+const GITHUB_OWNER = detected.owner;
+const GITHUB_REPO = detected.repo;
 
 const $ = (id) => document.getElementById(id);
 
@@ -44,8 +63,11 @@ function formatUpdated(iso) {
 function extractInning(text) {
   const t = normalizeNumberText(text);
 
-  const m = t.match(/([0-9]+)\s*回\s*(表|裏)/);
+  let m = t.match(/([0-9]+)\s*回\s*(表|裏)/);
   if (m) return `${m[1]}回${m[2]}`;
+
+  m = t.match(/([一二三四五六七八九十]+)\s*回\s*(表|裏)/);
+  if (m) return `${kanjiToNumber(m[1])}回${m[2]}`;
 
   if (/試合開始|プレイボール/.test(t)) return "試合開始";
   if (/試合終了|ゲームセット/.test(t)) return "試合終了";
@@ -53,17 +75,41 @@ function extractInning(text) {
   return null;
 }
 
+function kanjiToNumber(s) {
+  const map = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10
+  };
+
+  if (s === "十") return 10;
+
+  if (s.includes("十")) {
+    const [a, b] = s.split("十");
+    return (a ? map[a] : 1) * 10 + (b ? map[b] : 0);
+  }
+
+  return map[s] || s;
+}
+
 function extractScore(text) {
   const t = normalizeNumberText(text);
 
-  let m = t.match(new RegExp(`${AWAY_TEAM}\\s*(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s*${HOME_TEAM}`));
+  let m = t.match(new RegExp(`${AWAY_TEAM}\\s*(\\d{1,2})\\s*[-―－ー]\\s*(\\d{1,2})\\s*${HOME_TEAM}`));
   if (m) return { away: Number(m[1]), home: Number(m[2]) };
 
-  m = t.match(new RegExp(`${HOME_TEAM}\\s*(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s*${AWAY_TEAM}`));
+  m = t.match(new RegExp(`${HOME_TEAM}\\s*(\\d{1,2})\\s*[-―－ー]\\s*(\\d{1,2})\\s*${AWAY_TEAM}`));
   if (m) return { away: Number(m[2]), home: Number(m[1]) };
 
-  m = t.match(/(\d{1,2})\s*-\s*(\d{1,2})/);
-  if (m && /得点|先制|追加点|同点|逆転|勝ち越し|試合終了|ゲームセット|スコア/.test(t)) {
+  m = t.match(/(\d{1,2})\s*[-―－ー]\s*(\d{1,2})/);
+  if (m && /得点|先制|追加点|同点|逆転|勝ち越し|試合終了|ゲームセット|終了|スコア/.test(t)) {
     return { away: Number(m[1]), home: Number(m[2]) };
   }
 
@@ -72,13 +118,13 @@ function extractScore(text) {
 
 function classifyEvent(text) {
   const rules = [
-    ["final", /試合終了|ゲームセット/, "試合終了"],
-    ["score", /得点|先制|追加点|同点|逆転|勝ち越し|本塁打|ホームラン|スクイズ/, "得点"],
-    ["hit", /安打|ヒット|二塁打|三塁打|内野安打/, "安打"],
+    ["final", /試合終了|ゲームセット|終了/, "試合終了"],
+    ["score", /得点|先制|追加点|同点|逆転|勝ち越し|本塁打|ホームラン|スクイズ|タイムリー/, "得点"],
+    ["hit", /安打|ヒット|二塁打|三塁打|ツーベース|スリーベース|内野安打/, "安打"],
     ["change", /チェンジ|攻守交代/, "チェンジ"],
     ["change", /投手交代|守備交代|代打|代走|選手交代/, "交代"],
-    ["out", /三振|凡退|フライ|ゴロ|アウト|併殺/, "アウト"],
-    ["runner", /四球|死球|盗塁|犠打|送りバント|満塁|出塁|進塁/, "走者"],
+    ["out", /三振|凡退|フライ|ゴロ|アウト|併殺|見逃し|空振り/, "アウト"],
+    ["runner", /四球|死球|盗塁|犠打|送りバント|満塁|出塁|進塁|一塁|二塁|三塁/, "走者"],
     ["error", /失策|エラー|暴投|捕逸|悪送球/, "ミス"]
   ];
 
@@ -89,29 +135,81 @@ function classifyEvent(text) {
   return { type: "normal", label: "速報" };
 }
 
-function buildEvents(comments) {
+function splitIssueBody(body, issue) {
+  return String(body || "")
+    .split(/\n{2,}/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text, index) => ({
+      id: `issue-body-${index + 1}`,
+      body: text,
+      created_at: issue.created_at,
+      html_url: issue.html_url
+    }));
+}
+
+async function fetchIssueAndComments() {
+  if (!GITHUB_OWNER || !GITHUB_REPO) {
+    throw new Error("GitHub PagesのURLからリポジトリ名を判定できませんでした。");
+  }
+
+  const issueUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${ISSUE_NUMBER}`;
+  const commentsUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100`;
+
+  const [issueRes, commentsRes] = await Promise.all([
+    fetch(issueUrl, {
+      headers: {
+        Accept: "application/vnd.github+json"
+      }
+    }),
+    fetch(commentsUrl, {
+      headers: {
+        Accept: "application/vnd.github+json"
+      }
+    })
+  ]);
+
+  if (!issueRes.ok) {
+    throw new Error(`Issueを読み込めません。${issueRes.status} / ${GITHUB_OWNER}/${GITHUB_REPO} / #${ISSUE_NUMBER}`);
+  }
+
+  if (!commentsRes.ok) {
+    throw new Error(`Issueコメントを読み込めません。${commentsRes.status}`);
+  }
+
+  const issue = await issueRes.json();
+  const comments = await commentsRes.json();
+
+  return [
+    ...splitIssueBody(issue.body, issue),
+    ...comments
+  ];
+}
+
+function buildEvents(items) {
   let awayScore = null;
   let homeScore = null;
   let status = "試合前";
 
-  const events = comments.map((comment, index) => {
-    const text = comment.body.trim();
+  const events = items.map((item, index) => {
+    const text = String(item.body || "").trim();
     const inning = extractInning(text);
     const score = extractScore(text);
     const tag = classifyEvent(text);
 
     if (inning) status = inning;
+
     if (score) {
       awayScore = score.away;
       homeScore = score.home;
     }
 
     return {
-      id: comment.id,
+      id: item.id,
       number: index + 1,
       text,
-      created_at: comment.created_at,
-      html_url: comment.html_url,
+      created_at: item.created_at,
+      html_url: item.html_url,
       inning: inning || status,
       tag,
       awayScore,
@@ -144,32 +242,16 @@ function renderEvent(event) {
         <div class="eventText">${escapeHtml(event.text)}</div>
 
         <a class="eventLink" href="${escapeHtml(event.html_url)}" target="_blank" rel="noreferrer">
-          入力コメントを見る
+          入力元を見る
         </a>
       </div>
     </article>
   `;
 }
 
-async function fetchComments() {
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100`;
-
-  const res = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json"
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error(`GitHub comments fetch failed: ${res.status}`);
-  }
-
-  return res.json();
-}
-
 async function update() {
-  const comments = await fetchComments();
-  const live = buildEvents(comments);
+  const items = await fetchIssueAndComments();
+  const live = buildEvents(items);
 
   $("awayScore").textContent = live.awayScore ?? "-";
   $("homeScore").textContent = live.homeScore ?? "-";
@@ -188,9 +270,15 @@ async function update() {
 
 update().catch((err) => {
   console.error(err);
-  $("gameStatus").textContent = "読み込みエラー";
-  $("empty").hidden = false;
-  $("empty").textContent = "GitHub Issueコメントを読み込めませんでした。";
+
+  if ($("gameStatus")) {
+    $("gameStatus").textContent = "読み込みエラー";
+  }
+
+  if ($("empty")) {
+    $("empty").hidden = false;
+    $("empty").textContent = err.message;
+  }
 });
 
 setInterval(() => {
