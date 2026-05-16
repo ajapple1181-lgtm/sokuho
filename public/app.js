@@ -2,7 +2,7 @@ const ISSUE_NUMBER = 1;
 
 const AWAY_TEAM = "恵那";
 const HOME_TEAM = "多治見北";
-const REFRESH_MS = 120000;
+const REFRESH_MS = 30000;
 
 function detectGitHubRepo() {
   const host = location.hostname;
